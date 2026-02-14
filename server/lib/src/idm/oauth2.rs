@@ -370,6 +370,7 @@ impl AuthoriseReject {
 enum OauthRSType {
     Basic {
         authz_secret: String,
+        // PKCE can be optionally enabled/disabled
         enable_pkce: bool,
         enable_consent_prompt: bool,
     },
@@ -404,14 +405,9 @@ impl std::fmt::Debug for OauthRSType {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         let mut ds = f.debug_struct("OauthRSType");
         match self {
-            OauthRSType::Basic {
-                enable_pkce,
-                enable_consent_prompt,
-                ..
-            } => ds
+            OauthRSType::Basic { enable_pkce, .. } => ds
                 .field("type", &"basic")
-                .field("pkce", enable_pkce)
-                .field("consent_prompt", enable_consent_prompt),
+                .field("pkce", enable_pkce),
             OauthRSType::Public {
                 allow_localhost_redirect,
             } => ds
@@ -508,19 +504,22 @@ impl Oauth2RS {
         }
     }
 
+    /// Returns true if this RS supports PKCE
+    /// Always returns true - the server always advertises PKCE is available
+    /// It is up to the client to decide whether to use it
     pub fn is_pkce(&self) -> bool {
-        match self.type_ {
-            OauthRSType::Basic { .. } => false,
-            OauthRSType::Public { .. } => true,
-        }
+        // PKCE is always supported/advertised by the server
+        true
     }
 
     /// Does this client require PKCE?
+    /// Always returns false - PKCE is optional for all client types
+    /// The client can choose to use PKCE, and if they do, we verify it
     pub fn require_pkce(&self) -> bool {
-        match &self.type_ {
-            OauthRSType::Basic { enable_pkce, .. } => *enable_pkce,
-            OauthRSType::Public { .. } => true,
-        }
+        // PKCE is never required - the client decides if they want to use it
+        // If the client uses PKCE (sends code_challenge), we verify it
+        // If the client doesn't use PKCE, that's also fine
+        false
     }
 
     /// Does this RS have device flow enabled?
@@ -2899,7 +2898,8 @@ impl IdmServerProxyReadTransaction<'_> {
 
         let service_documentation = Some(URL_SERVICE_DOCUMENTATION.clone());
 
-        let code_challenge_methods_supported = if o2rs.require_pkce() {
+        // PKCE is always supported by the server - it's advertised to clients
+        let code_challenge_methods_supported = if o2rs.is_pkce() {
             vec![PkceAlg::S256]
         } else {
             Vec::with_capacity(0)
@@ -2972,7 +2972,8 @@ impl IdmServerProxyReadTransaction<'_> {
         let claims_supported = None;
         let service_documentation = Some(URL_SERVICE_DOCUMENTATION.clone());
 
-        let code_challenge_methods_supported = if o2rs.require_pkce() {
+        // PKCE is always supported by the server - it's advertised to clients
+        let code_challenge_methods_supported = if o2rs.is_pkce() {
             vec![PkceAlg::S256]
         } else {
             Vec::with_capacity(0)
