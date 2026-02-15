@@ -445,6 +445,8 @@ pub enum GrantType {
     Implicit,
     #[serde(rename = "urn:ietf:params:oauth:grant-type:token-exchange")]
     TokenExchange,
+    #[serde(rename = "urn:ietf:params:oauth:grant-type:device_code")]
+    DeviceCode,
 }
 
 fn grant_types_supported_default() -> Vec<GrantType> {
@@ -452,6 +454,7 @@ fn grant_types_supported_default() -> Vec<GrantType> {
         GrantType::AuthorisationCode,
         GrantType::Implicit,
         GrantType::TokenExchange,
+        GrantType::DeviceCode,
     ]
 }
 

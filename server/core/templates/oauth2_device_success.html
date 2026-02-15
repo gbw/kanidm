@@ -1,0 +1,23 @@
+(% extends "base.html" %)
+
+(% block title %)Device Authorized(% endblock %)
+
+(% block head %)
+(% endblock %)
+
+(% block body %)
+<main id="main" class="flex-shrink-0">
+    <center>
+        (% if domain_custom_image %)
+        <img src="/ui/images/domain" alt="Kanidm" class="kanidm_logo" />
+        (% else %)
+        <img src="/pkg/img/logo-square.svg" alt="Kanidm" class="kanidm_logo" />
+        (% endif %)
+        <br />
+        <h2>Device Authorized Successfully</h2>
+        <p>Your device has been authorized. You can now return to your device.</p>
+        <p>Client: (( client_name ))</p>
+        <a href="/" class="btn btn-primary">Return to Home</a>
+    </center>
+</main>
+(% endblock %)

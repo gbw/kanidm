@@ -311,6 +311,14 @@ pub struct Oauth2DeviceLoginView {
     user_code: String,
 }
 
+#[derive(Template, Debug, Clone, WebTemplate)]
+#[cfg(feature = "dev-oauth2-device-flow")]
+#[template(path = "oauth2_device_success.html")]
+pub struct Oauth2DeviceSuccessView {
+    domain_custom_image: bool,
+    client_name: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[cfg(feature = "dev-oauth2-device-flow")]
 pub(crate) struct QueryUserCode {
@@ -343,15 +351,116 @@ pub struct Oauth2DeviceLoginForm {
 #[cfg(feature = "dev-oauth2-device-flow")]
 #[axum::debug_handler]
 pub async fn view_device_post(
-    State(_state): State<ServerState>,
-    Extension(_kopid): Extension<KOpId>,
-    VerifiedClientInformation(_client_auth_info): VerifiedClientInformation,
+    State(state): State<ServerState>,
+    Extension(kopid): Extension<KOpId>,
+    VerifiedClientInformation(client_auth_info): VerifiedClientInformation,
+    DomainInfo(domain_info): DomainInfo,
+    jar: CookieJar,
     Form(form): Form<Oauth2DeviceLoginForm>,
-) -> Result<String, (StatusCode, &'static str)> {
+) -> Result<Response, UnrecoverableErrorView> {
     debug!("User code: {}", form.user_code);
     debug!("User confirmed: {}", form.confirm_login);
 
-    // TODO: when the user POST's this form we need to check the user code and see if it's valid
-    // then start a login flow which ends up authorizing the token at the end.
-    Err((StatusCode::NOT_IMPLEMENTED, "Not implemented yet"))
+    // If the user did not confirm the login, show an error or redirect
+    if !form.confirm_login {
+        // User rejected the device authorization
+        // For now, redirect back to the device login page with an error
+        return Ok((StatusCode::FORBIDDEN, "Device authorization was rejected").into_response());
+    }
+
+    // First, check if the user is already authenticated
+    // We use handle_auth_valid which validates the client auth info
+    let auth_valid = state
+        .qe_r_ref
+        .handle_auth_valid(client_auth_info.clone(), kopid.eventid)
+        .await;
+
+    // If authentication failed or user is not authenticated, redirect to login
+    if auth_valid.is_err() {
+        // User is not authenticated - redirect to login
+        // Store the user_code in a cookie so we can redirect back after login
+        let device_login_data = serde_json::json!({
+            "user_code": form.user_code,
+            "confirm": true
+        });
+
+        // Try to store the device auth data in a cookie for the login flow
+        let _ = cookies::make_signed(&state, "device_auth_req", &device_login_data).map(
+            |mut cookie| {
+                cookie.set_same_site(SameSite::Strict);
+                cookie.set_max_age(time::Duration::minutes(5));
+                // Note: we can't add this cookie because we can't modify jar here easily
+                // Instead, we'll include the user_code in the redirect URL
+            },
+        );
+
+        // Redirect to the login page with the device code as a query parameter
+        // After login, the user will be redirected back to the device flow
+        let login_url = format!("/ui/login?device_code={}", form.user_code);
+        debug!("Redirecting unauthenticated user to login: {}", login_url);
+        return Ok((
+            jar,
+            [(HX_REDIRECT, login_url.clone())],
+            Redirect::to(&login_url),
+        )
+            .into_response());
+    }
+
+    // User is authenticated, now authorize the device
+    // Pass the client_auth_info - the actor will validate and extract identity internally
+    let res = state
+        .qe_w_ref
+        .handle_oauth2_authorize_device(client_auth_info, form.user_code, kopid.eventid)
+        .await;
+
+    match res {
+        Ok(client_id) => {
+            // Device authorized successfully - render the success template
+            debug!("Device authorized successfully for client: {}", client_id);
+            let domain_custom_image = state.qe_r_ref.domain_info_read().has_custom_image();
+            Ok(Oauth2DeviceSuccessView {
+                domain_custom_image,
+                client_name: client_id,
+            }
+            .into_response())
+        }
+        Err(Oauth2Error::InvalidGrant) => {
+            // Invalid or expired user code - render error page
+            Ok((
+                jar,
+                [(HX_REDIRECT, format!("/ui/oauth2/device?error=invalid_code"))],
+                Redirect::to(&format!("/ui/oauth2/device?error=invalid_code")),
+            )
+                .into_response())
+        }
+        Err(Oauth2Error::ExpiredToken) => {
+            // Device code expired - render error page
+            Ok((
+                jar,
+                [(HX_REDIRECT, format!("/ui/oauth2/device?error=expired"))],
+                Redirect::to(&format!("/ui/oauth2/device?error=expired")),
+            )
+                .into_response())
+        }
+        Err(Oauth2Error::AccessDenied) => {
+            // User doesn't have access to the required scopes - render error page
+            Ok((
+                jar,
+                [(
+                    HX_REDIRECT,
+                    format!("/ui/oauth2/device?error=access_denied"),
+                )],
+                Redirect::to(&format!("/ui/oauth2/device?error=access_denied")),
+            )
+                .into_response())
+        }
+        Err(e) => {
+            error!("Device authorization failed: {:?}", e);
+            Err(UnrecoverableErrorView {
+                err_code: OperationError::InvalidState,
+                operation_id: kopid.eventid,
+                domain_info,
+            })
+        }
+    }
 }

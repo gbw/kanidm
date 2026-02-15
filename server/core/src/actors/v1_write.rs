@@ -1728,4 +1728,33 @@ impl QueryServerWriteV1 {
                 Ok(res)
             })
     }
+
+    #[cfg(feature = "dev-oauth2-device-flow")]
+    pub async fn handle_oauth2_authorize_device(
+        &self,
+        client_auth_info: ClientAuthInfo,
+        user_code: String,
+        _eventid: Uuid,
+    ) -> Result<String, Oauth2Error> {
+        let ct = duration_from_epoch_now();
+        let mut idms_prox_write = self
+            .idms
+            .proxy_write(ct)
+            .await
+            .map_err(Oauth2Error::ServerError)?;
+
+        let ident = idms_prox_write
+            .validate_client_auth_info_to_ident(client_auth_info, ct)
+            .map_err(|e| {
+                error!(err = ?e, "Invalid identity");
+                Oauth2Error::InvalidRequest
+            })?;
+
+        idms_prox_write
+            .handle_oauth2_authorize_device(&ident, &user_code, ct)
+            .and_then(|res| {
+                idms_prox_write.commit().map_err(Oauth2Error::ServerError)?;
+                Ok(res)
+            })
+    }
 }

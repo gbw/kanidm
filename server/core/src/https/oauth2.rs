@@ -738,6 +738,13 @@ pub(crate) struct DeviceFlowForm {
     extra: BTreeMap<String, String>, // catches any extra nonsense that gets sent through
 }
 
+/// Form for device code authorization (user entering their code)
+#[cfg(feature = "dev-oauth2-device-flow")]
+#[derive(Deserialize, Debug)]
+pub(crate) struct DeviceAuthorizeForm {
+    user_code: String,
+}
+
 /// Device flow! [RFC8628](https://datatracker.ietf.org/doc/html/rfc8628)
 #[cfg(feature = "dev-oauth2-device-flow")]
 #[instrument(level = "info", skip(state, kopid, client_auth_info))]
@@ -755,6 +762,25 @@ pub(crate) async fn oauth2_authorise_device_post(
             &form.scope,
             kopid.eventid,
         )
+        .await
+        .map(Json::from)
+        .map_err(WebError::OAuth2)
+}
+
+/// Device flow authorization completion - user enters their code to authorize the device
+#[cfg(feature = "dev-oauth2-device-flow")]
+#[instrument(level = "info", skip(state, kopid, client_auth_info))]
+pub(crate) async fn oauth2_authorise_device_complete_post(
+    State(state): State<ServerState>,
+    Extension(kopid): Extension<KOpId>,
+    AuthorisationHeaders(client_auth_info): AuthorisationHeaders,
+    Form(form): Form<DeviceAuthorizeForm>,
+) -> Result<Json<String>, WebError> {
+    // This validates the client auth info to ensure the user is authenticated
+    // and then authorizes the device for the given user code
+    state
+        .qe_w_ref
+        .handle_oauth2_authorize_device(client_auth_info, form.user_code, kopid.eventid)
         .await
         .map(Json::from)
         .map_err(WebError::OAuth2)
@@ -819,7 +845,13 @@ pub fn route_setup(state: ServerState) -> Router<ServerState> {
     // IF YOU CHANGE THESE VALUES YOU MUST UPDATE OIDC DISCOVERY URLS
     #[cfg(feature = "dev-oauth2-device-flow")]
     {
-        router = router.route(OAUTH2_AUTHORISE_DEVICE, post(oauth2_authorise_device_post))
+        router = router
+            .route(OAUTH2_AUTHORISE_DEVICE, post(oauth2_authorise_device_post))
+            // This is the endpoint where the user submits their user code to authorize the device
+            .route(
+                "/ui/oauth2/device",
+                post(oauth2_authorise_device_complete_post),
+            )
     }
     // ⚠️  ⚠️   WARNING  ⚠️  ⚠️
     // IF YOU CHANGE THESE VALUES YOU MUST UPDATE OIDC DISCOVERY URLS
