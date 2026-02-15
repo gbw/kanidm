@@ -24,8 +24,10 @@ use concread::cowcell::*;
 use crypto_glue::{s256::Sha256, traits::Digest};
 use hashbrown::HashMap;
 use hashbrown::HashSet;
+use hex;
 use kanidm_proto::constants::*;
 use kanidm_proto::oauth2::IssuedTokenType;
+use kanidm_proto::oauth2::OAUTH2_DEVICE_CODE_EXPIRY_SECONDS;
 pub use kanidm_proto::oauth2::{
     AccessTokenIntrospectRequest, AccessTokenIntrospectResponse, AccessTokenRequest,
     AccessTokenResponse, AccessTokenType, AuthorisationRequest, ClaimType, ClientAuth,
@@ -44,7 +46,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use time::OffsetDateTime;
-use tracing::trace;
+use tracing::{error, trace};
 use uri::{OAUTH2_TOKEN_INTROSPECT_ENDPOINT, OAUTH2_TOKEN_REVOKE_ENDPOINT};
 use url::{Host, Origin, Url};
 use utoipa::ToSchema;
@@ -405,9 +407,9 @@ impl std::fmt::Debug for OauthRSType {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         let mut ds = f.debug_struct("OauthRSType");
         match self {
-            OauthRSType::Basic { enable_pkce, .. } => ds
-                .field("type", &"basic")
-                .field("pkce", enable_pkce),
+            OauthRSType::Basic { enable_pkce, .. } => {
+                ds.field("type", &"basic").field("pkce", enable_pkce)
+            }
             OauthRSType::Public {
                 allow_localhost_redirect,
             } => ds
@@ -557,11 +559,36 @@ impl std::fmt::Debug for Oauth2RS {
     }
 }
 
+/// Device code session state - tracks pending device authorization requests
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DeviceCodeSession {
+    /// The client_id that initiated the device flow
+    pub client_id: String,
+    /// The scopes that were requested
+    pub scope: BTreeSet<String>,
+    /// When this device code expires
+    pub expiry: u64,
+    /// The user code (human-readable) associated with this session
+    pub user_code: u32,
+    /// The UUID of the user who authorized this device (if authorized)
+    pub authorized_account_uuid: Option<Uuid>,
+    /// The session_id of the user session that authorized this (if authorized)
+    pub authorized_session_id: Option<Uuid>,
+    /// The time of the last poll request (for rate limiting per RFC 8628)
+    pub last_poll_time: Option<u64>,
+    /// The minimum interval between polls in seconds (from device authorization response)
+    pub interval: u64,
+}
+
 #[derive(Clone)]
 struct Oauth2RSInner {
     origin: Url,
     consent_key: JweA128KWEncipher,
     private_rs_set: HashMap<String, Oauth2RS>,
+    /// Active device code sessions, keyed by the device code (16 bytes as hex string)
+    device_code_map: HashMap<String, DeviceCodeSession>,
+    /// Reverse index: user_code (u32) -> device_code (hex string)
+    user_code_to_device_code: HashMap<u32, String>,
 }
 
 impl Oauth2RSInner {
@@ -592,6 +619,8 @@ impl Oauth2ResourceServers {
                 origin,
                 consent_key,
                 private_rs_set: HashMap::new(),
+                device_code_map: HashMap::new(),
+                user_code_to_device_code: HashMap::new(),
             }),
         })
     }
@@ -1187,7 +1216,7 @@ impl IdmServerProxyWriteTransaction<'_> {
                 )
             }
             GrantTypeReq::DeviceCode { device_code, scope } => {
-                self.check_oauth2_device_code_status(device_code, scope)
+                self.check_oauth2_device_code_status(device_code, scope, ct)
             }
         }
     }
@@ -1209,47 +1238,70 @@ impl IdmServerProxyWriteTransaction<'_> {
     pub fn handle_oauth2_start_device_flow(
         &mut self,
         _client_auth_info: ClientAuthInfo,
-        _client_id: &str,
-        _scope: &Option<BTreeSet<String>>,
+        client_id: &str,
+        scope: &Option<BTreeSet<String>>,
         _eventid: Uuid,
     ) -> Result<DeviceAuthorizationResponse, Oauth2Error> {
-        // let o2rs = self.get_client(client_id)?;
+        let o2rs = self.get_client(client_id)?;
 
-        // info!("Got Client: {:?}", o2rs);
+        info!("Got Client: {:?}", o2rs);
 
-        // // TODO: change this to checking if it's got device flow enabled
-        // if !o2rs.require_pkce() {
-        //     security_info!("Device flow is only available for PKCE-enabled clients");
-        //     return Err(Oauth2Error::InvalidRequest);
-        // }
+        // Check if device flow is enabled for this client
+        if !o2rs.device_flow_enabled() {
+            security_info!("Device flow is not enabled for this client");
+            return Err(Oauth2Error::InvalidRequest);
+        }
 
-        // info!(
-        //     "Starting device flow for client_id={} scopes={} source={:?}",
-        //     client_id,
-        //     scope
-        //         .as_ref()
-        //         .map(|s| s.iter().cloned().collect::<Vec<_>>().into_iter().join(","))
-        //         .unwrap_or("[]".to_string()),
-        //     client_auth_info.source
-        // );
+        info!(
+            "Starting device flow for client_id={} scopes={:?}",
+            client_id, scope
+        );
 
-        // let mut verification_uri = self.oauth2rs.inner.origin.clone();
-        // verification_uri.set_path(uri::OAUTH2_DEVICE_LOGIN);
+        let mut verification_uri = self.oauth2rs.inner.origin.clone();
+        verification_uri.set_path(uri::OAUTH2_DEVICE_LOGIN);
 
-        // let (user_code_string, _user_code) = gen_user_code();
-        // let expiry =
-        //     Duration::from_secs(OAUTH2_DEVICE_CODE_EXPIRY_SECONDS) + duration_from_epoch_now();
-        // let device_code = gen_device_code()
-        //     .inspect_err(|err| error!("Failed to generate a device code! {:?}", err))?;
+        let (user_code_string, user_code) = gen_user_code();
 
-        Err(Oauth2Error::InvalidGrant)
+        let ct = duration_from_epoch_now();
+        let expiry = ct.as_secs() + OAUTH2_DEVICE_CODE_EXPIRY_SECONDS;
 
-        // TODO: store user_code / expiry / client_id / device_code in the backend, needs to be checked on the token exchange.
-        // Ok(DeviceAuthorizationResponse::new(
-        //     verification_uri,
-        //     device_code,
-        //     user_code_string,
-        // ))
+        let device_code = gen_device_code().map_err(|err| {
+            error!("Failed to generate a device code! {:?}", err);
+            Oauth2Error::ServerError(OperationError::Backend)
+        })?;
+
+        // Store the device code session
+        // The device_code is 16 bytes, we store it as a hex string for lookup
+        let device_code_hex = hex::encode(device_code);
+
+        let device_session = DeviceCodeSession {
+            client_id: client_id.to_string(),
+            scope: scope.clone().unwrap_or_default(),
+            expiry,
+            user_code,
+            authorized_account_uuid: None,
+            authorized_session_id: None,
+            last_poll_time: None,
+            interval: 5, // Default interval of 5 seconds per RFC 8628
+        };
+
+        // Insert into the device code map
+        self.oauth2rs
+            .inner
+            .device_code_map
+            .insert(device_code_hex.clone(), device_session);
+
+        // Also add to the reverse index for user_code lookup
+        self.oauth2rs
+            .inner
+            .user_code_to_device_code
+            .insert(user_code, device_code_hex);
+
+        Ok(DeviceAuthorizationResponse::new(
+            verification_uri,
+            device_code,
+            user_code_string,
+        ))
     }
 
     #[instrument(level = "info", skip(self))]
@@ -1257,17 +1309,205 @@ impl IdmServerProxyWriteTransaction<'_> {
         &mut self,
         device_code: &str,
         scope: &Option<BTreeSet<String>>,
+        ct: Duration,
     ) -> Result<AccessTokenResponse, Oauth2Error> {
-        // TODO: check the device code is valid, do the needful
+        let ct_secs = ct.as_secs();
 
-        error!(
-            "haven't done the device grant yet! Got device_code={} scope={:?}",
-            device_code, scope
+        // Look up the device code
+        let device_code_hex = device_code.to_string();
+
+        let device_session = match self.oauth2rs.inner.device_code_map.get(&device_code_hex) {
+            Some(session) => session,
+            None => {
+                error!("Invalid device code: {}", device_code);
+                return Err(Oauth2Error::InvalidGrant);
+            }
+        };
+
+        // Check if the device code has expired
+        if ct_secs > device_session.expiry {
+            error!("Device code expired for device_code={}", device_code);
+            // Remove the expired device code
+            self.oauth2rs.inner.device_code_map.remove(&device_code_hex);
+            return Err(Oauth2Error::ExpiredToken);
+        }
+
+        // Check if the user has authorized the device
+        match (
+            &device_session.authorized_account_uuid,
+            &device_session.authorized_session_id,
+        ) {
+            (Some(account_uuid), Some(session_id)) => {
+                // User has authorized, generate access tokens
+                let o2rs = self.get_client(&device_session.client_id)?;
+
+                // Validate the requested scope matches what was originally requested
+                let requested_scope = scope.as_ref().unwrap_or(&device_session.scope);
+
+                // For device flow, we use the scopes that were requested initially
+                let scopes = requested_scope.clone();
+
+                // Generate the access token response
+                // For device flow, we don't have a parent session, so we use the session_id as both parent and session
+                self.generate_access_token_response(
+                    &o2rs,
+                    ct,
+                    scopes,
+                    *account_uuid,
+                    *session_id,
+                    *session_id,
+                    None, // nonce - not used in device flow
+                )
+            }
+            (None, None) => {
+                // User hasn't authorized yet - return authorization_pending or slow_down
+                // Per RFC 8628, we need to track poll times and enforce the interval
+
+                // Get mutable reference to update the session
+                let session = self
+                    .oauth2rs
+                    .inner
+                    .device_code_map
+                    .get_mut(&device_code_hex)
+                    .ok_or_else(|| {
+                        error!("Device code session not found");
+                        Oauth2Error::InvalidGrant
+                    })?;
+
+                let now = ct_secs;
+                let interval = session.interval;
+                let last_poll = session.last_poll_time.unwrap_or(0);
+
+                // Check if client is polling too fast
+                if now < last_poll + interval {
+                    // Client is polling too fast - return slow_down
+                    // Increase the interval by 5 seconds per RFC 8628
+                    session.interval = interval + 5;
+                    trace!(
+                        "Device polling too fast, returning slow_down. New interval: {} seconds",
+                        session.interval
+                    );
+                    Err(Oauth2Error::SlowDown)
+                } else {
+                    // Update last poll time
+                    session.last_poll_time = Some(now);
+                    trace!("Device not yet authorized, returning authorization_pending. Interval: {} seconds", interval);
+                    Err(Oauth2Error::AuthorizationPending)
+                }
+            }
+            _ => {
+                // This is an inconsistent state - shouldn't happen
+                error!("Inconsistent device code session state");
+                Err(Oauth2Error::ServerError(OperationError::InvalidState))
+            }
+        }
+    }
+
+    /// Authorize a device flow session with the given user code.
+    /// This is called when the user enters their code on the device login page.
+    #[instrument(level = "info", skip(self))]
+    pub fn handle_oauth2_authorize_device(
+        &mut self,
+        ident: &Identity,
+        user_code: &str,
+        ct: Duration,
+    ) -> Result<String, Oauth2Error> {
+        let ct_secs = ct.as_secs();
+
+        // Parse and validate the user code
+        let user_code_val = parse_user_code(user_code).map_err(|_| {
+            error!("Invalid user code format: {}", user_code);
+            Oauth2Error::InvalidRequest
+        })?;
+
+        // Look up the device code from the user code
+        let device_code_hex = match self
+            .oauth2rs
+            .inner
+            .user_code_to_device_code
+            .get(&user_code_val)
+        {
+            Some(code) => code.clone(),
+            None => {
+                error!("Invalid user code: {}", user_code);
+                return Err(Oauth2Error::InvalidGrant);
+            }
+        };
+
+        // Get the device session
+        let device_session = match self.oauth2rs.inner.device_code_map.get(&device_code_hex) {
+            Some(session) => session,
+            None => {
+                error!("Device code not found for user code: {}", user_code);
+                return Err(Oauth2Error::InvalidGrant);
+            }
+        };
+
+        // Clone the client_id early to avoid borrow conflicts
+        let client_id = device_session.client_id.clone();
+
+        // Check if the device code has expired
+        if ct_secs > device_session.expiry {
+            error!("Device code expired for user_code={}", user_code);
+            // Remove the expired device code
+            self.oauth2rs.inner.device_code_map.remove(&device_code_hex);
+            self.oauth2rs
+                .inner
+                .user_code_to_device_code
+                .remove(&user_code_val);
+            return Err(Oauth2Error::ExpiredToken);
+        }
+
+        // Check that the user is not anonymous
+        let account_uuid = ident.get_uuid().ok_or_else(|| {
+            error!("Ident does not have a valid uuid, unable to proceed");
+            Oauth2Error::InvalidRequest
+        })?;
+
+        if account_uuid == UUID_ANONYMOUS {
+            admin_error!("Invalid OAuth2 device authorization - refusing to allow anonymous user");
+            return Err(Oauth2Error::AccessDenied);
+        }
+
+        // Validate the scopes - check the user has access to the requested scopes
+        let o2rs = self.get_client(&client_id)?;
+
+        // Get the scopes that were requested
+        let requested_scopes = &device_session.scope;
+
+        // Validate that the user has access to these scopes
+        let (_req_scopes, granted_scopes) =
+            process_requested_scopes_for_identity(&o2rs, ident, Some(requested_scopes))?;
+
+        // Check that we actually got some scopes (user is a member of at least one group with scopes)
+        if granted_scopes.is_empty() {
+            warn!("User does not have access to any requested scopes");
+            return Err(Oauth2Error::AccessDenied);
+        }
+
+        // Update the device session with the authorized account
+        // We need to get a mutable reference to update the session
+        let session = self
+            .oauth2rs
+            .inner
+            .device_code_map
+            .get_mut(&device_code_hex)
+            .ok_or_else(|| {
+                error!("Device code session not found");
+                Oauth2Error::InvalidGrant
+            })?;
+
+        // Store the account uuid and session id
+        session.authorized_account_uuid = Some(account_uuid);
+        session.authorized_session_id = Some(ident.get_session_id());
+
+        info!(
+            "Device authorized for user_code={}, client_id={}",
+            user_code, client_id
         );
-        Err(Oauth2Error::AuthorizationPending)
 
-        // if it's an expired code, then just delete it from the db and return an error.
-        // Err(Oauth2Error::ExpiredToken)
+        // Return the client_id so the view can display appropriate info
+        Ok(client_id)
     }
 
     #[instrument(level = "debug", skip_all)]
@@ -2950,9 +3190,12 @@ impl IdmServerProxyReadTransaction<'_> {
         let response_types_supported = vec![ResponseType::Code];
         let response_modes_supported = vec![ResponseMode::Query, ResponseMode::Fragment];
 
-        // TODO: add device code if the rs supports it per <https://www.rfc-editor.org/rfc/rfc8628#section-4>
-        // `urn:ietf:params:oauth:grant-type:device_code`
-        let grant_types_supported = vec![GrantType::AuthorisationCode, GrantType::TokenExchange];
+        // Add device code grant type if the rs supports it per <https://www.rfc-editor.org/rfc/rfc8628#section-4>
+        let mut grant_types_supported =
+            vec![GrantType::AuthorisationCode, GrantType::TokenExchange];
+        if o2rs.device_flow_enabled() {
+            grant_types_supported.push(GrantType::DeviceCode);
+        }
 
         let subject_types_supported = vec![SubjectType::Public];
 
@@ -3333,7 +3576,6 @@ fn validate_scopes(req_scopes: &BTreeSet<String>) -> Result<(), Oauth2Error> {
 
 /// device code is a random bucket of bytes used in the device flow
 #[inline]
-#[cfg(any(feature = "dev-oauth2-device-flow", test))]
 #[allow(dead_code)]
 fn gen_device_code() -> Result<[u8; 16], Oauth2Error> {
     use rand::TryRngCore;
@@ -3349,7 +3591,6 @@ fn gen_device_code() -> Result<[u8; 16], Oauth2Error> {
 }
 
 #[inline]
-#[cfg(any(feature = "dev-oauth2-device-flow", test))]
 #[allow(dead_code)]
 /// Returns (xxx-yyy-zzz, digits) where one's the human-facing code, the other is what we store in the DB.
 fn gen_user_code() -> (String, u32) {
