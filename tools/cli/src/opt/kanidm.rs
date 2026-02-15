@@ -1011,13 +1011,6 @@ pub enum Oauth2Opt {
         #[clap(name = "url")]
         origin: Url,
     },
-    #[clap(name = "enable-pkce")]
-    /// Enable PKCE on this oauth2 client. This defaults to being enabled.
-    EnablePkce(Named),
-    /// Disable PKCE on this oauth2 client to work around insecure clients that
-    /// may not support it. You should request the client to enable PKCE!
-    #[clap(name = "warning-insecure-client-disable-pkce")]
-    DisablePkce(Named),
     #[clap(name = "warning-enable-legacy-crypto")]
     /// Enable legacy signing crypto on this oauth2 client. This defaults to being disabled.
     /// You only need to enable this for openid clients that do not support modern cryptographic

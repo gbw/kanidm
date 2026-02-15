@@ -287,20 +287,6 @@ impl Oauth2Opt {
                     Err(e) => handle_client_error(e, opt.output_mode),
                 }
             }
-            Oauth2Opt::EnablePkce(nopt) => {
-                let client = opt.to_client(OpType::Write).await;
-                match client.idm_oauth2_rs_enable_pkce(nopt.name.as_str()).await {
-                    Ok(_) => opt.output_mode.print_message("Success"),
-                    Err(e) => handle_client_error(e, opt.output_mode),
-                }
-            }
-            Oauth2Opt::DisablePkce(nopt) => {
-                let client = opt.to_client(OpType::Write).await;
-                match client.idm_oauth2_rs_disable_pkce(nopt.name.as_str()).await {
-                    Ok(_) => opt.output_mode.print_message("Success"),
-                    Err(e) => handle_client_error(e, opt.output_mode),
-                }
-            }
             Oauth2Opt::EnableLegacyCrypto(nopt) => {
                 let client = opt.to_client(OpType::Write).await;
                 match client
