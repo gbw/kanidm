@@ -372,8 +372,6 @@ impl AuthoriseReject {
 enum OauthRSType {
     Basic {
         authz_secret: String,
-        // PKCE can be optionally enabled/disabled
-        enable_pkce: bool,
         enable_consent_prompt: bool,
     },
     // Public clients must have pkce and consent prompt
@@ -407,8 +405,8 @@ impl std::fmt::Debug for OauthRSType {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         let mut ds = f.debug_struct("OauthRSType");
         match self {
-            OauthRSType::Basic { enable_pkce, .. } => {
-                ds.field("type", &"basic").field("pkce", enable_pkce)
+            OauthRSType::Basic { .. } => {
+                ds.field("type", &"basic")
             }
             OauthRSType::Public {
                 allow_localhost_redirect,
@@ -506,23 +504,6 @@ impl Oauth2RS {
         }
     }
 
-    /// Returns true if this RS supports PKCE
-    /// Always returns true - the server always advertises PKCE is available
-    /// It is up to the client to decide whether to use it
-    pub fn is_pkce(&self) -> bool {
-        // PKCE is always supported/advertised by the server
-        true
-    }
-
-    /// Does this client require PKCE?
-    /// Always returns false - PKCE is optional for all client types
-    /// The client can choose to use PKCE, and if they do, we verify it
-    pub fn require_pkce(&self) -> bool {
-        // PKCE is never required - the client decides if they want to use it
-        // If the client uses PKCE (sends code_challenge), we verify it
-        // If the client doesn't use PKCE, that's also fine
-        false
-    }
 
     /// Does this RS have device flow enabled?
     pub fn device_flow_enabled(&self) -> bool {
@@ -692,18 +673,12 @@ impl Oauth2ResourceServersWriteTransaction<'_> {
                         .map(str::to_string)
                         .ok_or(OperationError::InvalidValueState)?;
 
-                    let enable_pkce = ent
-                        .get_ava_single_bool(Attribute::OAuth2AllowInsecureClientDisablePkce)
-                        .map(|e| !e)
-                        .unwrap_or(true);
-
                     let enable_consent_prompt = ent
                         .get_ava_single_bool(Attribute::OAuth2ConsentPromptEnable)
                         .unwrap_or(true);
 
                     OauthRSType::Basic {
                         authz_secret,
-                        enable_pkce,
                         enable_consent_prompt,
                     }
                 } else if ent.attribute_equality(
@@ -1683,11 +1658,6 @@ impl IdmServerProxyWriteTransaction<'_> {
                 );
                 return Err(Oauth2Error::InvalidRequest);
             }
-        } else if o2rs.require_pkce() {
-            security_info!(
-                "PKCE code verification failed - no code challenge present in PKCE enforced mode"
-            );
-            return Err(Oauth2Error::InvalidRequest);
         } else if token_req_code_verifier.is_some() {
             security_info!(
                 "PKCE code verification failed - a code verifier is present, but no code challenge in exchange"
@@ -2525,20 +2495,16 @@ impl IdmServerProxyReadTransaction<'_> {
 
         // == end validation of oauth2 redirect conditions.
 
+        // PKCE is optional but preferred - clients may provide a code challenge
         let code_challenge = if let Some(pkce_request) = &auth_req.pkce_request {
-            if !o2rs.require_pkce() {
-                security_info!(?o2rs.name, "Insecure OAuth2 client configuration - PKCE is not enforced, but client is requesting it!");
-            }
             // CodeChallengeMethod must be S256
             if pkce_request.code_challenge_method != CodeChallengeMethod::S256 {
                 admin_warn!("Invalid OAuth2 code_challenge_method (must be 'S256')");
                 return Err(Oauth2Error::InvalidRequest);
             }
             Some(pkce_request.code_challenge.clone())
-        } else if o2rs.require_pkce() {
-            security_error!(?o2rs.name, "No PKCE code challenge was provided with client in enforced PKCE mode");
-            return Err(Oauth2Error::InvalidRequest);
         } else {
+            // No PKCE provided - PKCE is optional but recommended
             security_info!(?o2rs.name, "Insecure client configuration - PKCE is not enforced");
             None
         };
@@ -3138,12 +3104,8 @@ impl IdmServerProxyReadTransaction<'_> {
 
         let service_documentation = Some(URL_SERVICE_DOCUMENTATION.clone());
 
-        // PKCE is always supported by the server - it's advertised to clients
-        let code_challenge_methods_supported = if o2rs.is_pkce() {
-            vec![PkceAlg::S256]
-        } else {
-            Vec::with_capacity(0)
-        };
+        // PKCE is always supported by the server
+        let code_challenge_methods_supported = vec![PkceAlg::S256];
 
         Ok(Oauth2Rfc8414MetadataResponse {
             issuer,
@@ -3215,12 +3177,8 @@ impl IdmServerProxyReadTransaction<'_> {
         let claims_supported = None;
         let service_documentation = Some(URL_SERVICE_DOCUMENTATION.clone());
 
-        // PKCE is always supported by the server - it's advertised to clients
-        let code_challenge_methods_supported = if o2rs.is_pkce() {
-            vec![PkceAlg::S256]
-        } else {
-            Vec::with_capacity(0)
-        };
+        // PKCE is always supported by the server
+        let code_challenge_methods_supported = vec![PkceAlg::S256];
 
         // The following are extensions allowed by the oidc specification.
 
@@ -4272,7 +4230,7 @@ mod tests {
                 == Oauth2Error::UnsupportedResponseType
         );
 
-        // * No pkce in pkce enforced mode.
+        // * No pkce provided - PKCE is now optional, so this should succeed
         let auth_req = AuthorisationRequest {
             response_type: ResponseType::Code,
             response_mode: None,
@@ -4287,11 +4245,11 @@ mod tests {
             unknown_keys: Default::default(),
         };
 
+        // PKCE is now optional, so this should succeed
         assert!(
             idms_prox_read
                 .check_oauth2_authorisation(Some(&ident), &auth_req, ct)
-                .unwrap_err()
-                == Oauth2Error::InvalidRequest
+                .is_ok()
         );
 
         //  * invalid rs name
@@ -8240,7 +8198,6 @@ mod tests {
             (
                 OauthRSType::Basic {
                     authz_secret: "supersecret".to_string(),
-                    enable_pkce: false,
                     enable_consent_prompt: true,
                 },
                 false,
