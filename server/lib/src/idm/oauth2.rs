@@ -1279,6 +1279,36 @@ impl IdmServerProxyWriteTransaction<'_> {
         ))
     }
 
+    /// Validates a device code session, returning the session if valid.
+    /// This helper handles lookup, existence checking, and expiry validation.
+    fn validate_device_session(
+        &mut self,
+        device_code_hex: &str,
+        ct_secs: u64,
+    ) -> Result<DeviceCodeSession, Oauth2Error> {
+        // Look up the device code
+        let device_session = match self.oauth2rs.inner.device_code_map.get(device_code_hex) {
+            Some(session) => session,
+            None => {
+                error!("Invalid device code: {}", device_code_hex);
+                return Err(Oauth2Error::InvalidGrant);
+            }
+        };
+
+        // Check if the device code has expired
+        if ct_secs > device_session.expiry {
+            error!("Device code expired for device_code={}", device_code_hex);
+            // Remove the expired device code
+            self.oauth2rs
+                .inner
+                .device_code_map
+                .remove(device_code_hex);
+            return Err(Oauth2Error::ExpiredToken);
+        }
+
+        Ok(device_session.clone())
+    }
+
     #[instrument(level = "info", skip(self))]
     fn check_oauth2_device_code_status(
         &mut self,
@@ -1288,24 +1318,9 @@ impl IdmServerProxyWriteTransaction<'_> {
     ) -> Result<AccessTokenResponse, Oauth2Error> {
         let ct_secs = ct.as_secs();
 
-        // Look up the device code
+        // Validate the device session
         let device_code_hex = device_code.to_string();
-
-        let device_session = match self.oauth2rs.inner.device_code_map.get(&device_code_hex) {
-            Some(session) => session,
-            None => {
-                error!("Invalid device code: {}", device_code);
-                return Err(Oauth2Error::InvalidGrant);
-            }
-        };
-
-        // Check if the device code has expired
-        if ct_secs > device_session.expiry {
-            error!("Device code expired for device_code={}", device_code);
-            // Remove the expired device code
-            self.oauth2rs.inner.device_code_map.remove(&device_code_hex);
-            return Err(Oauth2Error::ExpiredToken);
-        }
+        let device_session = self.validate_device_session(&device_code_hex, ct_secs)?;
 
         // Check if the user has authorized the device
         match (
