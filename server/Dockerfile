@@ -40,9 +40,9 @@ COPY . /usr/src/kanidm
 
 # ======================
 
-WORKDIR /usr/src/kanidm/kanidmd/daemon
+WORKDIR /usr/src/kanidm
 
-# Exports don't persist through RUN statements.
+# Build the daemon binary - features will propagate to dependencies
 RUN --mount=type=cache,id=cargo,target=/cargo \
     --mount=type=cache,id=sccache,target=/sccache \
     export CARGO_HOME=/cargo && \
