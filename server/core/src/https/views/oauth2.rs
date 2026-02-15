@@ -428,8 +428,11 @@ pub async fn view_device_post(
             // Invalid or expired user code - render error page
             Ok((
                 jar,
-                [(HX_REDIRECT, format!("/ui/oauth2/device?error=invalid_code"))],
-                Redirect::to(&format!("/ui/oauth2/device?error=invalid_code")),
+                [(
+                    HX_REDIRECT,
+                    "/ui/oauth2/device?error=invalid_code".to_string(),
+                )],
+                Redirect::to("/ui/oauth2/device?error=invalid_code"),
             )
                 .into_response())
         }
@@ -437,8 +440,8 @@ pub async fn view_device_post(
             // Device code expired - render error page
             Ok((
                 jar,
-                [(HX_REDIRECT, format!("/ui/oauth2/device?error=expired"))],
-                Redirect::to(&format!("/ui/oauth2/device?error=expired")),
+                [(HX_REDIRECT, "/ui/oauth2/device?error=expired".to_string())],
+                Redirect::to("/ui/oauth2/device?error=expired"),
             )
                 .into_response())
         }
@@ -448,9 +451,9 @@ pub async fn view_device_post(
                 jar,
                 [(
                     HX_REDIRECT,
-                    format!("/ui/oauth2/device?error=access_denied"),
+                    "/ui/oauth2/device?error=access_denied".to_string(),
                 )],
-                Redirect::to(&format!("/ui/oauth2/device?error=access_denied")),
+                Redirect::to("/ui/oauth2/device?error=access_denied"),
             )
                 .into_response())
         }
