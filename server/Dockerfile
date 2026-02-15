@@ -40,16 +40,16 @@ COPY . /usr/src/kanidm
 
 # ======================
 
-WORKDIR /usr/src/kanidm/kanidmd/daemon
+WORKDIR /usr/src/kanidm
 
-# Exports don't persist through RUN statements.
+# Build the daemon binary - features will propagate to dependencies
 RUN --mount=type=cache,id=cargo,target=/cargo \
     --mount=type=cache,id=sccache,target=/sccache \
     export CARGO_HOME=/cargo && \
     export SCCACHE_DIR=/sccache && \
     export RUSTC_WRAPPER=/usr/bin/sccache && \
     export CC="/usr/bin/clang" && \
-    cargo build --locked -p daemon ${KANIDM_BUILD_OPTIONS} \
+    cargo build --locked --bin kanidmd ${KANIDM_BUILD_OPTIONS} \
         --target-dir="/usr/src/kanidm/target/" \
         --features="${KANIDM_FEATURES}" \
         --release; \
