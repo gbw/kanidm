@@ -405,9 +405,7 @@ impl std::fmt::Debug for OauthRSType {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         let mut ds = f.debug_struct("OauthRSType");
         match self {
-            OauthRSType::Basic { .. } => {
-                ds.field("type", &"basic")
-            }
+            OauthRSType::Basic { .. } => ds.field("type", &"basic"),
             OauthRSType::Public {
                 allow_localhost_redirect,
             } => ds
@@ -503,7 +501,6 @@ impl Oauth2RS {
             OauthRSType::Public { .. } => false,
         }
     }
-
 
     /// Does this RS have device flow enabled?
     pub fn device_flow_enabled(&self) -> bool {
@@ -1287,22 +1284,16 @@ impl IdmServerProxyWriteTransaction<'_> {
         ct_secs: u64,
     ) -> Result<DeviceCodeSession, Oauth2Error> {
         // Look up the device code
-        let device_session = match self.oauth2rs.inner.device_code_map.get(device_code_hex) {
-            Some(session) => session,
-            None => {
-                error!("Invalid device code: {}", device_code_hex);
-                return Err(Oauth2Error::InvalidGrant);
-            }
+        let Some(device_session) = self.oauth2rs.inner.device_code_map.get(device_code_hex) else {
+            error!("Invalid device code: {}", device_code_hex);
+            return Err(Oauth2Error::InvalidGrant);
         };
 
         // Check if the device code has expired
         if ct_secs > device_session.expiry {
             error!("Device code expired for device_code={}", device_code_hex);
             // Remove the expired device code
-            self.oauth2rs
-                .inner
-                .device_code_map
-                .remove(device_code_hex);
+            self.oauth2rs.inner.device_code_map.remove(device_code_hex);
             return Err(Oauth2Error::ExpiredToken);
         }
 
@@ -1425,12 +1416,9 @@ impl IdmServerProxyWriteTransaction<'_> {
         };
 
         // Get the device session
-        let device_session = match self.oauth2rs.inner.device_code_map.get(&device_code_hex) {
-            Some(session) => session,
-            None => {
-                error!("Device code not found for user code: {}", user_code);
-                return Err(Oauth2Error::InvalidGrant);
-            }
+        let Some(device_session) = self.oauth2rs.inner.device_code_map.get(&device_code_hex) else {
+            error!("Device code not found for user code: {}", user_code);
+            return Err(Oauth2Error::InvalidGrant);
         };
 
         // Clone the client_id early to avoid borrow conflicts
@@ -4256,11 +4244,9 @@ mod tests {
         };
 
         // PKCE is now optional, so this should succeed
-        assert!(
-            idms_prox_read
-                .check_oauth2_authorisation(Some(&ident), &auth_req, ct)
-                .is_ok()
-        );
+        assert!(idms_prox_read
+            .check_oauth2_authorisation(Some(&ident), &auth_req, ct)
+            .is_ok());
 
         //  * invalid rs name
         let auth_req = AuthorisationRequest {
