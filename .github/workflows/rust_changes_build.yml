@@ -104,5 +104,5 @@ jobs:
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | \
             oras login -u "${{ github.actor }}" --password-stdin ghcr.io
-          oras copy --from-oci-layout "/tmp/kanidmd-docker.tar:latest" \
+          oras copy --from-oci-layout "/tmp/kanidmd-docker.tar:${{ needs.set_tag_values.outputs.tag_name }}" \
             "ghcr.io/${{ needs.set_tag_values.outputs.owner_lc }}/kanidmd:${{ needs.set_tag_values.outputs.tag_name }}"
