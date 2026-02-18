@@ -261,6 +261,7 @@ pub const OAUTH2_SCOPE_SSH_PUBLICKEYS: &str = "ssh_publickeys";
 pub const OAUTH2_SCOPE_OPENID: &str = "openid";
 pub const OAUTH2_SCOPE_READ: &str = "read";
 pub const OAUTH2_SCOPE_SUPPLEMENT: &str = "supplement";
+pub const OAUTH2_SCOPE_OFFLINE_ACCESS: &str = "offline_access";
 
 pub const LDAP_ATTR_CN: &str = "cn";
 pub const LDAP_ATTR_DN: &str = "dn";
