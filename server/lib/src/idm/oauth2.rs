@@ -1759,17 +1759,33 @@ impl IdmServerProxyWriteTransaction<'_> {
                     return Err(Oauth2Error::InvalidGrant);
                 }
 
-                // Check the session is still valid. This call checks the parent session
-                // and the OAuth2 session.
-                let valid = self
-                    .check_oauth2_account_uuid_valid(
+                // Check the session validity.
+                // For offline_access tokens (refresh tokens), we don't require the parent
+                // session to still be connected - this allows offline access even after
+                // the user's primary session expires.
+                // We check the offline_access scope in the refresh token to determine behavior.
+                let offline_access_granted = scopes.contains(OAUTH2_SCOPE_OFFLINE_ACCESS);
+
+                let valid = if offline_access_granted {
+                    // For offline_access, only check the OAuth2 session validity,
+                    // not the parent user session (which may have expired/revoked)
+                    self.check_oauth2_account_uuid_valid(
+                        uuid, session_id,
+                        None, // Don't require parent session for offline_access
+                        iat, ct,
+                    )
+                    .map_err(|_| admin_error!("Account is not valid"))
+                } else {
+                    // For regular refresh tokens, require both sessions to be valid
+                    self.check_oauth2_account_uuid_valid(
                         uuid,
                         session_id,
                         Some(parent_session_id),
                         iat,
                         ct,
                     )
-                    .map_err(|_| admin_error!("Account is not valid"));
+                    .map_err(|_| admin_error!("Account is not valid"))
+                };
 
                 let Ok(Some(entry)) = valid else {
                     security_info!(
@@ -2105,6 +2121,10 @@ impl IdmServerProxyWriteTransaction<'_> {
 
         let scope = scopes.clone();
 
+        // Check if offline_access scope was requested - this determines if we issue a refresh token
+        // Per OAuth 2.0 spec, offline_access scope requests a refresh token for background/offline access
+        let offline_access_requested = scopes.contains(OAUTH2_SCOPE_OFFLINE_ACCESS);
+
         let iss = o2rs.iss.clone();
 
         // Just reflect the access token expiry.
@@ -2225,42 +2245,62 @@ impl IdmServerProxyWriteTransaction<'_> {
             Oauth2Error::ServerError(OperationError::InvalidState)
         })?;
 
-        let refresh_token_raw = Oauth2TokenType::Refresh {
-            scopes,
-            parent_session_id,
-            session_id,
-            exp: refresh_expiry,
-            uuid: account_uuid,
-            iat,
-            nbf: iat,
-            nonce,
-        };
+        // Only issue refresh token if offline_access scope was requested
+        // Per OAuth 2.0 spec, offline_access requests a refresh token for background/offline access
+        let (refresh_token, session) = if offline_access_requested {
+            let refresh_token_raw = Oauth2TokenType::Refresh {
+                scopes,
+                parent_session_id,
+                session_id,
+                exp: refresh_expiry,
+                uuid: account_uuid,
+                iat,
+                nbf: iat,
+                nonce,
+            };
 
-        let refresh_token_data = Jwe::into_json(&refresh_token_raw).map_err(|err| {
-            error!(?err, "Unable to encode token data");
-            Oauth2Error::ServerError(OperationError::SerdeJsonError)
-        })?;
-
-        let refresh_token = o2rs
-            .key_object
-            .jwe_a128gcm_encrypt(&refresh_token_data, ct)
-            .map(|jwe| jwe.to_string())
-            .map_err(|err| {
-                error!(?err, "Unable to encrypt token data");
-                Oauth2Error::ServerError(OperationError::CryptographyError)
+            let refresh_token_data = Jwe::into_json(&refresh_token_raw).map_err(|err| {
+                error!(?err, "Unable to encode token data");
+                Oauth2Error::ServerError(OperationError::SerdeJsonError)
             })?;
 
-        // Write the session to the db even with the refresh path, we need to do
-        // this to update the "not issued before" time.
-        let session = Value::Oauth2Session(
-            session_id,
-            Oauth2Session {
-                parent: Some(parent_session_id),
-                state: SessionState::ExpiresAt(odt_refresh_expiry),
-                issued_at: odt_ct,
-                rs_uuid: o2rs.uuid,
-            },
-        );
+            let refresh_token = o2rs
+                .key_object
+                .jwe_a128gcm_encrypt(&refresh_token_data, ct)
+                .map(|jwe| jwe.to_string())
+                .map_err(|err| {
+                    error!(?err, "Unable to encrypt token data");
+                    Oauth2Error::ServerError(OperationError::CryptographyError)
+                })?;
+
+            // Write the session to the db even with the refresh path, we need to do
+            // this to update the "not issued before" time.
+            let session = Value::Oauth2Session(
+                session_id,
+                Oauth2Session {
+                    parent: Some(parent_session_id),
+                    state: SessionState::ExpiresAt(odt_refresh_expiry),
+                    issued_at: odt_ct,
+                    rs_uuid: o2rs.uuid,
+                },
+            );
+
+            (Some(refresh_token), session)
+        } else {
+            // Without offline_access, we still need to write a session for the access token
+            // but it uses the access token expiry instead of the refresh token expiry
+            let session = Value::Oauth2Session(
+                session_id,
+                Oauth2Session {
+                    parent: Some(parent_session_id),
+                    state: SessionState::ExpiresAt(expiry),
+                    issued_at: odt_ct,
+                    rs_uuid: o2rs.uuid,
+                },
+            );
+
+            (None, session)
+        };
 
         // We need to update (replace) this session id if present.
         let modlist = ModifyList::new_list(vec![
@@ -2285,7 +2325,7 @@ impl IdmServerProxyWriteTransaction<'_> {
             token_type: AccessTokenType::Bearer,
             issued_token_type: Some(IssuedTokenType::AccessToken),
             expires_in,
-            refresh_token: Some(refresh_token),
+            refresh_token,
             scope,
             id_token,
         })
