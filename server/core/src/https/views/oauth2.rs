@@ -10,6 +10,10 @@ use kanidm_proto::internal::COOKIE_OAUTH2_REQ;
 
 use std::collections::BTreeSet;
 
+/// Cookie name for storing device authorization requests during login flow
+#[cfg(feature = "dev-oauth2-device-flow")]
+const COOKIE_DEVICE_AUTH_REQ: &str = "device_auth_req";
+
 use askama::Template;
 use askama_web::WebTemplate;
 
@@ -24,6 +28,9 @@ use axum::{
 use axum_extra::extract::cookie::{CookieJar, SameSite};
 use axum_htmx::HX_REDIRECT;
 use serde::Deserialize;
+
+#[cfg(feature = "dev-oauth2-device-flow")]
+use serde::Serialize;
 
 use super::login::{LoginDisplayCtx, Oauth2Ctx};
 use super::{cookies, UnrecoverableErrorView};
@@ -341,6 +348,98 @@ pub async fn view_device_get(
     })
 }
 
+/// Data stored in cookie for device authorization during login flow
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg(feature = "dev-oauth2-device-flow")]
+pub struct DeviceAuthRequest {
+    pub user_code: String,
+}
+
+/// Resume endpoint for device flow after login
+/// This is called after successful login to complete device authorization
+#[cfg(feature = "dev-oauth2-device-flow")]
+pub async fn view_device_resume_get(
+    State(state): State<ServerState>,
+    Extension(kopid): Extension<KOpId>,
+    VerifiedClientInformation(client_auth_info): VerifiedClientInformation,
+    DomainInfo(domain_info): DomainInfo,
+    jar: CookieJar,
+) -> Response {
+    // Clear the device auth cookie
+    let jar = cookies::destroy(jar, COOKIE_DEVICE_AUTH_REQ, &state);
+
+    // Get the device auth request from the cookie
+    let maybe_device_auth_req =
+        cookies::get_signed::<DeviceAuthRequest>(&state, &jar, COOKIE_DEVICE_AUTH_REQ);
+
+    let Some(device_auth_req) = maybe_device_auth_req else {
+        error!("Device resume called but no device auth request cookie found");
+        return (
+            jar,
+            UnrecoverableErrorView {
+                err_code: OperationError::InvalidSessionState,
+                operation_id: kopid.eventid,
+                domain_info,
+            },
+        )
+            .into_response();
+    };
+
+    // User is authenticated, now authorize the device
+    let res = state
+        .qe_w_ref
+        .handle_oauth2_authorize_device(client_auth_info, device_auth_req.user_code, kopid.eventid)
+        .await;
+
+    match res {
+        Ok(client_id) => {
+            debug!("Device authorized successfully for client: {}", client_id);
+            let domain_custom_image = state.qe_r_ref.domain_info_read().has_custom_image();
+            Oauth2DeviceSuccessView {
+                domain_custom_image,
+                client_name: client_id,
+            }
+            .into_response()
+        }
+        Err(Oauth2Error::InvalidGrant) => (
+            jar,
+            [(
+                HX_REDIRECT,
+                "/ui/oauth2/device?error=invalid_code".to_string(),
+            )],
+            Redirect::to("/ui/oauth2/device?error=invalid_code"),
+        )
+            .into_response(),
+        Err(Oauth2Error::ExpiredToken) => (
+            jar,
+            [(HX_REDIRECT, "/ui/oauth2/device?error=expired".to_string())],
+            Redirect::to("/ui/oauth2/device?error=expired"),
+        )
+            .into_response(),
+        Err(Oauth2Error::AccessDenied) => (
+            jar,
+            [(
+                HX_REDIRECT,
+                "/ui/oauth2/device?error=access_denied".to_string(),
+            )],
+            Redirect::to("/ui/oauth2/device?error=access_denied"),
+        )
+            .into_response(),
+        Err(e) => {
+            error!("Device authorization failed: {:?}", e);
+            (
+                jar,
+                UnrecoverableErrorView {
+                    err_code: OperationError::InvalidState,
+                    operation_id: kopid.eventid,
+                    domain_info,
+                },
+            )
+                .into_response()
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[cfg(feature = "dev-oauth2-device-flow")]
 pub struct Oauth2DeviceLoginForm {
@@ -377,31 +476,35 @@ pub async fn view_device_post(
 
     // If authentication failed or user is not authenticated, redirect to login
     if auth_valid.is_err() {
-        // User is not authenticated - redirect to login
-        // Store the user_code in a cookie so we can redirect back after login
-        let device_login_data = serde_json::json!({
-            "user_code": form.user_code,
-            "confirm": true
-        });
+        // User is not authenticated - store the device auth request and redirect to login
+        let device_auth_req = DeviceAuthRequest {
+            user_code: form.user_code.clone(),
+        };
 
-        // Try to store the device auth data in a cookie for the login flow
-        let _ = cookies::make_signed(&state, "device_auth_req", &device_login_data).map(
-            |mut cookie| {
+        // Store the device auth data in a cookie for the login flow
+        let jar = match cookies::make_signed(&state, COOKIE_DEVICE_AUTH_REQ, &device_auth_req) {
+            Some(mut cookie) => {
                 cookie.set_same_site(SameSite::Strict);
                 cookie.set_max_age(time::Duration::minutes(5));
-                // Note: we can't add this cookie because we can't modify jar here easily
-                // Instead, we'll include the user_code in the redirect URL
-            },
-        );
+                jar.add(cookie)
+            }
+            None => {
+                // If we can't create the cookie, still redirect to login
+                // The user will need to re-enter their user code after login
+                warn!("Failed to create device auth cookie, user will need to re-enter code");
+                jar
+            }
+        };
 
-        // Redirect to the login page with the device code as a query parameter
-        // After login, the user will be redirected back to the device flow
-        let login_url = format!("/ui/login?device_code={}", form.user_code);
-        debug!("Redirecting unauthenticated user to login: {}", login_url);
+        // Redirect to the login page
+        // After successful login, the login flow checks for the device auth cookie
+        // and redirects back to the device flow resume endpoint
+        let login_url = "/ui/login";
+        debug!("Redirecting unauthenticated user to login");
         return Ok((
             jar,
-            [(HX_REDIRECT, login_url.clone())],
-            Redirect::to(&login_url),
+            [(HX_REDIRECT, login_url.to_string())],
+            Redirect::to(login_url),
         )
             .into_response());
     }

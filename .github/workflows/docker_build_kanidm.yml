@@ -49,9 +49,8 @@ jobs:
         with:
           platforms: "linux/amd64"
           tags: ghcr.io/${{ needs.set_tag_values.outputs.owner_lc }}/kanidm:devel,ghcr.io/${{ needs.set_tag_values.outputs.owner_lc }}/kanidm:${{ needs.set_tag_values.outputs.ref_name}}
-
           build-args: |
-            "KANIDM_FEATURES="
+            "KANIDM_FEATURES=dev-oauth2-device-flow"
           file: tools/Dockerfile
           context: .
           labels: ${{ steps.meta.outputs.labels }}
