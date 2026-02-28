@@ -11,10 +11,9 @@ impl Oauth2Opt {
         match self {
             #[cfg(feature = "dev-oauth2-device-flow")]
             Oauth2Opt::DeviceFlowDisable(nopt) => {
-                // TODO: finish the CLI bits for DeviceFlowDisable
                 let client = opt.to_client(OpType::Write).await;
                 match client
-                    .idm_oauth2_client_device_flow_update(&nopt.name, true)
+                    .idm_oauth2_client_device_flow_update(&nopt.name, false)
                     .await
                 {
                     Ok(_) => opt.output_mode.print_message("Success"),

@@ -115,10 +115,17 @@ pub fn view_router(state: ServerState) -> Router<ServerState> {
         .route("/logout", get(login::view_logout_get));
 
     #[cfg(feature = "dev-oauth2-device-flow")]
-    let unguarded_router = unguarded_router.route(
-        kanidmd_lib::prelude::uri::OAUTH2_DEVICE_LOGIN,
-        get(oauth2::view_device_get).post(oauth2::view_device_post),
-    );
+    let unguarded_router = unguarded_router
+        // Note: Urls::as_route() returns paths WITHOUT /ui prefix since this router
+        // is mounted at /ui. For templates/redirects, use Urls::as_ref() which includes /ui.
+        .route(
+            Urls::Oauth2Device.as_route(),
+            get(oauth2::view_device_get).post(oauth2::view_device_post),
+        )
+        .route(
+            Urls::Oauth2DeviceResume.as_route(),
+            get(oauth2::view_device_resume_get),
+        );
 
     // The webauthn post is unguarded because it's not a htmx event.
 

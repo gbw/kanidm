@@ -1067,6 +1067,22 @@ async fn view_login_step(
                         jar = cookies::destroy(jar, COOKIE_AUTH_SESSION_ID, &state);
 
                         // Now, we need to decided where to go.
+                        // Check for device auth cookie first (device flow)
+                        #[cfg(feature = "dev-oauth2-device-flow")]
+                        let has_device_auth_req = jar.get("device_auth_req").is_some();
+
+                        #[cfg(feature = "dev-oauth2-device-flow")]
+                        let res = if jar.get(COOKIE_OAUTH2_REQ).is_some() {
+                            Redirect::to(Urls::Oauth2Resume.as_ref()).into_response()
+                        } else if has_device_auth_req {
+                            Redirect::to(Urls::Oauth2DeviceResume.as_ref()).into_response()
+                        } else if let Some(auth_loc) = session_context.after_auth_loc {
+                            Redirect::to(auth_loc.as_str()).into_response()
+                        } else {
+                            Redirect::to(Urls::Apps.as_ref()).into_response()
+                        };
+
+                        #[cfg(not(feature = "dev-oauth2-device-flow"))]
                         let res = if jar.get(COOKIE_OAUTH2_REQ).is_some() {
                             Redirect::to(Urls::Oauth2Resume.as_ref()).into_response()
                         } else if let Some(auth_loc) = session_context.after_auth_loc {
