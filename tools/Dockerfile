@@ -49,11 +49,9 @@ RUN \
         --release && \
     cargo auditable build --locked -p kanidm-ipa-sync ${KANIDM_BUILD_OPTIONS} \
         --target-dir="/usr/src/kanidm/target/" \
-        --features="${KANIDM_FEATURES}" \
         --release && \
     cargo auditable build --locked -p kanidm-ldap-sync ${KANIDM_BUILD_OPTIONS} \
         --target-dir="/usr/src/kanidm/target/" \
-        --features="${KANIDM_FEATURES}" \
         --release && \
     cargo auditable build --locked -p kanidm-mail-sender ${KANIDM_BUILD_OPTIONS} \
         --target-dir="/usr/src/kanidm/target/" \

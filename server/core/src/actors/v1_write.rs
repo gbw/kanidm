@@ -1788,7 +1788,7 @@ impl QueryServerWriteV1 {
             .await
             .map_err(Oauth2Error::ServerError)?;
         idms_prox_write
-            .handle_oauth2_start_device_flow(client_auth_info, client_id, scope, eventid)
+            .handle_oauth2_start_device_flow(&client_auth_info, client_id, scope, eventid)
             .and_then(|res| {
                 idms_prox_write.commit().map_err(Oauth2Error::ServerError)?;
                 Ok(res)

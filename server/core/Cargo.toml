@@ -17,7 +17,7 @@ doctest = false
 
 [features]
 default = []
-dev-oauth2-device-flow = []
+dev-oauth2-device-flow = ["kanidmd_lib/dev-oauth2-device-flow", "kanidm_proto/dev-oauth2-device-flow"]
 
 [dependencies]
 askama = { workspace = true }

@@ -22,6 +22,7 @@ doctest = false
 [features]
 dhat-heap = ["dep:dhat"]
 dhat-ad-hoc = ["dep:dhat"]
+dev-oauth2-device-flow = ["kanidmd_core/dev-oauth2-device-flow"]
 
 [dependencies]
 kanidm_proto = { workspace = true }

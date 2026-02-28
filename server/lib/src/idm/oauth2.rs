@@ -958,6 +958,50 @@ impl Oauth2ResourceServersWriteTransaction<'_> {
     pub fn commit(self) {
         self.inner.commit();
     }
+
+    /// Clean up expired device code sessions
+    /// This should be called periodically to prevent memory leaks from expired device codes
+    #[cfg(feature = "dev-oauth2-device-flow")]
+    pub fn cleanup_expired_device_codes(&mut self, ct: Duration) {
+        let now = ct.as_secs();
+
+        // Find all expired device codes
+        let expired_codes: Vec<String> = self
+            .inner
+            .device_code_map
+            .iter()
+            .filter(|(_, session)| session.expiry <= now)
+            .map(|(code, _)| code.clone())
+            .collect();
+
+        // Also collect the corresponding user codes
+        let expired_user_codes: Vec<u32> = expired_codes
+            .iter()
+            .filter_map(|code| {
+                self.inner
+                    .device_code_map
+                    .get(code)
+                    .map(|session| session.user_code)
+            })
+            .collect();
+
+        // Remove expired device codes
+        for code in &expired_codes {
+            self.inner.device_code_map.remove(code);
+        }
+
+        // Remove expired user code mappings
+        for user_code in &expired_user_codes {
+            self.inner.user_code_to_device_code.remove(user_code);
+        }
+
+        if !expired_codes.is_empty() {
+            trace!(
+                "Cleaned up {} expired device code sessions",
+                expired_codes.len()
+            );
+        }
+    }
 }
 
 impl IdmServerProxyWriteTransaction<'_> {
@@ -1209,7 +1253,7 @@ impl IdmServerProxyWriteTransaction<'_> {
     #[instrument(level = "info", skip(self))]
     pub fn handle_oauth2_start_device_flow(
         &mut self,
-        _client_auth_info: ClientAuthInfo,
+        client_auth_info: &ClientAuthInfo,
         client_id: &str,
         scope: &Option<BTreeSet<String>>,
         _eventid: Uuid,
@@ -1222,6 +1266,69 @@ impl IdmServerProxyWriteTransaction<'_> {
         if !o2rs.device_flow_enabled() {
             security_info!("Device flow is not enabled for this client");
             return Err(Oauth2Error::InvalidRequest);
+        }
+
+        // Authenticate the client for confidential clients (Basic type)
+        // Per RFC 8628 Section 3.1, confidential clients MUST authenticate
+        match &o2rs.type_ {
+            OauthRSType::Basic { authz_secret, .. } => {
+                // For confidential clients, we need to verify the secret
+                let provided_secret = client_auth_info.basic_authz.as_ref().and_then(|authz| {
+                    // Parse basic auth to extract secret
+                    parse_basic_authz(authz)
+                        .ok()
+                        .and_then(|auth| auth.client_secret)
+                });
+
+                match provided_secret {
+                    Some(secret) if secret == *authz_secret => {
+                        // Client authenticated successfully
+                        security_info!("Device flow client authenticated successfully");
+                    }
+                    Some(_) => {
+                        security_info!("Device flow client authentication failed - invalid secret");
+                        return Err(Oauth2Error::AuthenticationRequired);
+                    }
+                    None => {
+                        security_info!(
+                            "Device flow client authentication failed - no secret provided"
+                        );
+                        return Err(Oauth2Error::AuthenticationRequired);
+                    }
+                }
+            }
+            OauthRSType::Public { .. } => {
+                // Public clients don't require authentication
+                // But we should still verify no secret was provided (it would be ignored anyway)
+                security_info!("Device flow for public client - no authentication required");
+            }
+        }
+
+        // Validate requested scopes against client's allowed scopes
+        if let Some(requested_scopes) = scope {
+            // Validate scope syntax first
+            validate_scopes(requested_scopes)?;
+
+            // Check that requested scopes are a subset of what the client supports
+            // The client's supported scopes come from scope_maps
+            let client_supported_scopes: BTreeSet<String> = o2rs
+                .scope_maps
+                .values()
+                .flat_map(|s| s.iter())
+                .chain(o2rs.sup_scope_maps.values().flat_map(|s| s.iter()))
+                .cloned()
+                .collect();
+
+            if !requested_scopes.is_subset(&client_supported_scopes) {
+                let invalid_scopes: Vec<_> = requested_scopes
+                    .difference(&client_supported_scopes)
+                    .collect();
+                admin_warn!(
+                    "Device flow requested scopes not supported by client: {:?}",
+                    invalid_scopes
+                );
+                return Err(Oauth2Error::InvalidScope);
+            }
         }
 
         info!(
