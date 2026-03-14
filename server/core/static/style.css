@@ -179,13 +179,47 @@ nav a.navbar-brand {
 
 #cred-update-commit-bar {
   display: block;
-  /*
   position: fixed;
-  bottom: .5rem;
-  left: 50%;
-  transform: translateX(-50%);
-  */
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 1000;
   background: white;
+  box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.15);
+  border-top: 1px solid var(--bs-border-color);
+  /* Safe area padding for mobile devices with notches/home indicators */
+  padding-bottom: env(safe-area-inset-bottom, 0);
+  /* Prevent iOS Safari overscroll from hiding the bar */
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Mobile-friendly adjustments for the commit bar buttons */
+@media (max-width: 400px) {
+  #cred-update-commit-bar .toast-body > .d-flex {
+    flex-direction: column;
+    row-gap: 0.5rem;
+  }
+  
+  #cred-update-commit-bar .btn {
+    width: 100%;
+  }
+  
+  /* Stack the Discard/Save buttons vertically on very small screens */
+  #cred-update-commit-bar .mt-3.d-flex {
+    flex-direction: column;
+    row-gap: 0.5rem;
+  }
+  
+  #cred-update-commit-bar .mt-3.d-flex .btn {
+    width: 100%;
+    margin-left: 0 !important;
+  }
+}
+
+/* Add extra padding at bottom of form so content isn't hidden behind fixed bar */
+/* Uses JS to dynamically set this, but provide a reasonable fallback */
+form.needs-validation {
+  padding-bottom: calc(100px + env(safe-area-inset-bottom, 0));
 }
 
 .icon-container {

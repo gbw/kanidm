@@ -1,5 +1,49 @@
 console.debug("credupdate: loaded");
 
+// Counter for pending changes
+let pendingChangesCount = 0;
+
+// Endpoints that modify credentials (add/remove operations)
+const MODIFYING_ENDPOINTS = [
+    "/ui/api/finish_passkey",
+    "/ui/api/remove_passkey",
+    "/ui/api/remove_alt_creds",
+    "/ui/api/remove_totp",
+    "/ui/api/remove_unixcred",
+    "/ui/api/remove_ssh_publickey",
+    "/ui/reset/add_password",
+    "/ui/reset/set_unixcred",
+    "/ui/reset/add_totp",
+    "/ui/api/add_totp",
+    "/ui/reset/add_ssh_publickey",
+];
+
+function updateSaveButton() {
+    const saveBtn = document.getElementById("save-changes-btn");
+    if (saveBtn) {
+        const baseText = "Save Changes";
+        if (pendingChangesCount > 0) {
+            saveBtn.textContent = `${baseText} (${pendingChangesCount})`;
+        } else {
+            saveBtn.textContent = baseText;
+        }
+    }
+}
+
+function incrementPendingChanges() {
+    pendingChangesCount++;
+    updateSaveButton();
+    console.debug(`credupdate: pending changes = ${pendingChangesCount}`);
+}
+
+function resetPendingChanges() {
+    pendingChangesCount = 0;
+    updateSaveButton();
+    console.debug("credupdate: pending changes reset to 0");
+}
+
+window.resetPendingChangesCount = resetPendingChanges;
+
 // Makes the password form interactive (e.g. shows when passwords don't match)
 function setupInteractivePwdFormListeners() {
     const new_pwd = document.getElementById("new-password");
@@ -154,4 +198,28 @@ window.removeBeforeUnloadHandler = function () {
         setupSubmitBtnVisibility();
     });
     window.addEventListener("beforeunload", beforeUnloadHandler);
+
+    // Track HTMX requests that modify credentials
+    document.body.addEventListener("htmx:beforeRequest", (event) => {
+        const path = event.detail.pathInfo.requestPath;
+        // Check if this is a modifying endpoint
+        if (MODIFYING_ENDPOINTS.some((endpoint) => path.startsWith(endpoint))) {
+            event.detail.pendingChangesIncrement = true;
+        }
+    });
+
+    document.body.addEventListener("htmx:afterRequest", (event) => {
+        const path = event.detail.pathInfo.requestPath;
+        // Only increment if the request was successful and it was a modifying endpoint
+        if (
+            event.detail.successful &&
+            event.detail.pendingChangesIncrement &&
+            MODIFYING_ENDPOINTS.some((endpoint) => path.startsWith(endpoint))
+        ) {
+            incrementPendingChanges();
+        }
+    });
+
+    // Update the save button on page load
+    updateSaveButton();
 })();
