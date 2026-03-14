@@ -178,7 +178,8 @@ nav a.navbar-brand {
 }
 
 #cred-update-commit-bar {
-  display: block;
+  display: flex;
+  justify-content: center;
   position: fixed;
   bottom: 0;
   left: 0;
@@ -191,6 +192,11 @@ nav a.navbar-brand {
   padding-bottom: env(safe-area-inset-bottom, 0);
   /* Prevent iOS Safari overscroll from hiding the bar */
   -webkit-overflow-scrolling: touch;
+}
+
+#cred-update-commit-bar .toast-body {
+  max-width: 500px;
+  width: 100%;
 }
 
 /* Mobile-friendly adjustments for the commit bar buttons */
