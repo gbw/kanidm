@@ -50,28 +50,37 @@ impl WebError {
 impl IntoResponse for WebError {
     fn into_response(self) -> Response {
         match self {
-            WebError::OAuth2(error) => {
-                if let Oauth2Error::AuthenticationRequired = error {
-                    (
-                        StatusCode::UNAUTHORIZED,
-                        [
-                            (WWW_AUTHENTICATE, "Bearer"),
-                            (ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
-                        ],
-                    )
-                        .into_response()
-                } else {
-                    (
-                        StatusCode::BAD_REQUEST,
-                        [(ACCESS_CONTROL_ALLOW_ORIGIN, "*")],
-                        Json(ErrorResponse {
-                            error: error.to_string(),
-                            ..Default::default()
-                        }),
-                    )
-                        .into_response()
-                }
-            }
+            WebError::OAuth2(error) => match error {
+                Oauth2Error::AuthenticationRequired => (
+                    StatusCode::UNAUTHORIZED,
+                    [
+                        (WWW_AUTHENTICATE, "Bearer"),
+                        (ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
+                    ],
+                )
+                    .into_response(),
+                Oauth2Error::InvalidToken => (
+                    StatusCode::UNAUTHORIZED,
+                    [
+                        (WWW_AUTHENTICATE, "Bearer"),
+                        (ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
+                    ],
+                    Json(ErrorResponse {
+                        error: error.to_string(),
+                        ..Default::default()
+                    }),
+                )
+                    .into_response(),
+                _ => (
+                    StatusCode::BAD_REQUEST,
+                    [(ACCESS_CONTROL_ALLOW_ORIGIN, "*")],
+                    Json(ErrorResponse {
+                        error: error.to_string(),
+                        ..Default::default()
+                    }),
+                )
+                    .into_response(),
+            },
             WebError::InternalServerError(inner) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, inner).into_response()
             }

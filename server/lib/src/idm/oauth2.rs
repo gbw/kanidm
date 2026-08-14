@@ -2509,7 +2509,23 @@ impl IdmServerProxyReadTransaction<'_> {
 
         let session_id = ident.get_session_id();
 
-        if consent_previously_granted || !o2rs.enable_consent_prompt() {
+        let consent_required = (
+                // consent was NOT previously granted, we SHOULD request it.
+                !consent_previously_granted
+                // OR
+                ||
+                // client is NOT basic AND is localhost
+                // - This prevents a malicious localhost client hijacking an existing localhost
+                // - consent that was granted.
+                (!o2rs.is_basic() && loopback_uri_matched)
+                // Future - if we add DCR then we will always force TRUE here.
+            )
+            // AND
+            &&
+            // consent prompt is enabled. This can only be false on confidential clients.
+            o2rs.enable_consent_prompt();
+
+        if !consent_required {
             if event_enabled!(tracing::Level::DEBUG) {
                 let pretty_scopes: Vec<String> =
                     granted_scopes.iter().map(|s| s.to_owned()).collect();
@@ -3061,12 +3077,20 @@ impl IdmServerProxyReadTransaction<'_> {
         let scopes_supported = Some(o2rs.scopes_supported.iter().cloned().collect());
         let response_types_supported = vec![ResponseType::Code];
         let response_modes_supported = vec![ResponseMode::Query, ResponseMode::Fragment];
-        let grant_types_supported = vec![GrantType::AuthorisationCode, GrantType::TokenExchange];
-
-        let token_endpoint_auth_methods_supported = vec![
-            EndpointAuthMethod::ClientSecretBasic,
-            EndpointAuthMethod::ClientSecretPost,
+        let grant_types_supported = vec![
+            GrantType::AuthorisationCode,
+            GrantType::TokenExchange,
+            GrantType::RefreshToken,
         ];
+
+        let token_endpoint_auth_methods_supported = if o2rs.is_basic() {
+            vec![
+                EndpointAuthMethod::ClientSecretBasic,
+                EndpointAuthMethod::ClientSecretPost,
+            ]
+        } else {
+            vec![EndpointAuthMethod::None]
+        };
 
         let revocation_endpoint_auth_methods_supported = vec![EndpointAuthMethod::None];
 
@@ -3127,7 +3151,11 @@ impl IdmServerProxyReadTransaction<'_> {
 
         // TODO: add device code if the rs supports it per <https://www.rfc-editor.org/rfc/rfc8628#section-4>
         // `urn:ietf:params:oauth:grant-type:device_code`
-        let grant_types_supported = vec![GrantType::AuthorisationCode, GrantType::TokenExchange];
+        let grant_types_supported = vec![
+            GrantType::AuthorisationCode,
+            GrantType::TokenExchange,
+            GrantType::RefreshToken,
+        ];
 
         let subject_types_supported = vec![SubjectType::Public];
 
@@ -3137,10 +3165,16 @@ impl IdmServerProxyReadTransaction<'_> {
         };
 
         let userinfo_signing_alg_values_supported = None;
-        let token_endpoint_auth_methods_supported = vec![
-            EndpointAuthMethod::ClientSecretBasic,
-            EndpointAuthMethod::ClientSecretPost,
-        ];
+
+        let token_endpoint_auth_methods_supported = if o2rs.is_basic() {
+            vec![
+                EndpointAuthMethod::ClientSecretBasic,
+                EndpointAuthMethod::ClientSecretPost,
+            ]
+        } else {
+            vec![EndpointAuthMethod::None]
+        };
+
         let display_values_supported = Some(vec![DisplayValue::Page]);
         let claim_types_supported = vec![ClaimType::Normal];
         // What claims can we offer?
@@ -5428,7 +5462,11 @@ mod tests {
         );
         assert_eq!(
             discovery.grant_types_supported,
-            vec![GrantType::AuthorisationCode, GrantType::TokenExchange]
+            vec![
+                GrantType::AuthorisationCode,
+                GrantType::TokenExchange,
+                GrantType::RefreshToken
+            ]
         );
         assert!(
             discovery.token_endpoint_auth_methods_supported
@@ -5581,7 +5619,11 @@ mod tests {
         );
         assert_eq!(
             discovery.grant_types_supported,
-            vec![GrantType::AuthorisationCode, GrantType::TokenExchange]
+            vec![
+                GrantType::AuthorisationCode,
+                GrantType::TokenExchange,
+                GrantType::RefreshToken
+            ]
         );
         assert_eq!(discovery.subject_types_supported, vec![SubjectType::Public]);
         assert_eq!(
